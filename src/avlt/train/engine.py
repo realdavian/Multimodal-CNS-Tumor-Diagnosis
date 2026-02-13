@@ -11,6 +11,7 @@ def create_dataloaders(cfg):
     if cfg["dataset"] == "synthetic":
         ds = SyntheticMultimodalDataset(n=256, num_classes=cfg["num_classes"],
                                         image_size=cfg["image_size"],
+                                        num_slices=cfg.get("num_slices", 16),
                                         text_model=cfg["text"]["model_name"], split='train')
         n_train = int(0.8 * len(ds))
         n_val = len(ds) - n_train
@@ -26,16 +27,27 @@ def train_loop(cfg, device=None, max_steps=None):
     train_dl, val_dl = create_dataloaders(cfg)
     model_s = AVLT(num_classes=cfg["num_classes"], image_size=cfg["image_size"],
                    backbone=cfg["vision"]["backbone"], text_model=cfg["text"]["model_name"],
-                   dropout=cfg["dropout"]).to(device)
+                   dropout=cfg["dropout"],
+                   vision_variant=cfg["vision"].get("variant", "fixed")).to(device)
     model_t = AVLT(num_classes=cfg["num_classes"], image_size=cfg["image_size"],
                    backbone=cfg["vision"]["backbone"], text_model=cfg["text"]["model_name"],
-                   dropout=cfg["dropout"]).to(device)
+                   dropout=cfg["dropout"],
+                   vision_variant=cfg["vision"].get("variant", "fixed")).to(device)
     model_t.load_state_dict(model_s.state_dict())
     for p in model_t.parameters(): p.requires_grad = False
 
-    opt = torch.optim.AdamW(model_s.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg["trainer"]["mixed_precision"] and device.startswith('cuda'))
+    # NOTE: Multi-GPU support via DataParallel
+    # Wraps models to split batches across all visible GPUs
+    n_gpus = torch.cuda.device_count()
+    if n_gpus > 1:
+        print(f"Using {n_gpus} GPUs via DataParallel")
+        model_s = torch.nn.DataParallel(model_s)
+        model_t = torch.nn.DataParallel(model_t)
+
+    opt = torch.optim.AdamW(model_s.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
+    scaler = torch.amp.GradScaler('cuda', enabled=cfg["trainer"]["mixed_precision"] and device.startswith('cuda'))
     losses = Losses(cfg["w_align"], cfg["w_sd"])
+
 
     step = 0
     for epoch in range(cfg["epochs"]):
@@ -46,7 +58,7 @@ def train_loop(cfg, device=None, max_steps=None):
             ids = batch["input_ids"].to(device)
             attn = batch["attention_mask"].to(device)
             y = batch["label"].to(device)
-            with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
+            with torch.amp.autocast('cuda', enabled=scaler.is_enabled()):
                 logits_s, f_v, f_t, f_fused, alpha, beta = model_s(imgs, ids, attn)
                 with torch.no_grad():
                     logits_t, *_ = model_t(imgs, ids, attn)
@@ -54,10 +66,13 @@ def train_loop(cfg, device=None, max_steps=None):
             scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model_s.parameters(), cfg["trainer"]["grad_clip"])
             scaler.step(opt); scaler.update(); opt.zero_grad()
-            # EMA
+            # EMA update
+            # NOTE: Handle DataParallel by accessing .module if wrapped
             m = cfg["ema_momentum"]
+            model_s_inner = model_s.module if hasattr(model_s, 'module') else model_s
+            model_t_inner = model_t.module if hasattr(model_t, 'module') else model_t
             with torch.no_grad():
-                for (n_s, p_s), (n_t, p_t) in zip(model_s.state_dict().items(), model_t.state_dict().items()):
+                for (n_s, p_s), (n_t, p_t) in zip(model_s_inner.state_dict().items(), model_t_inner.state_dict().items()):
                     p_t.copy_(m*p_t + (1-m)*p_s)
             if step % cfg["trainer"]["log_every"] == 0:
                 print(f"epoch {epoch} step {step} loss {loss.item():.4f} | cls {parts['cls']:.3f} align {parts['align']:.3f} sd {parts['sd']:.3f}")
@@ -67,8 +82,10 @@ def train_loop(cfg, device=None, max_steps=None):
             break
 
     # Save model
+    # NOTE: Save underlying module if wrapped with DataParallel
     ckpt = os.path.join(cfg["outputs"], "avlt_synthetic.pt")
-    torch.save(model_s.state_dict(), ckpt)
+    model_to_save = model_s.module if hasattr(model_s, 'module') else model_s
+    torch.save(model_to_save.state_dict(), ckpt)
     print("Saved:", ckpt)
 
     # Eval

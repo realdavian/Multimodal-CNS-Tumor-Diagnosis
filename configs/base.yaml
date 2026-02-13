@@ -2,10 +2,11 @@ seed: 42
 outputs: outputs
 dataset: synthetic
 data_root: data
-image_size: 224
+image_size: 224  # NOTE: 224 is 2D ImageNet resolution; 3D medical uses 96-128
+num_slices: 128  # Must be divisible by 32 for Swin3D (BraTS has 155, padded/cropped to 128)
 num_classes: 2
 text_maxlen: 128
-batch_size: 8
+batch_size: 8  # SwinUMamba (2D backbone) is more memory efficient than Swin3D
 num_workers: 2
 epochs: 3
 lr: 1e-4
@@ -21,7 +22,7 @@ vision:
   backbone: 'vit_base_patch16_224'
   pretrained: true
   cnn_stem: true
-
+  variant: 'swin3d'  # 'fixed', 'no_pool', 'original', 'slice_wise', 'swin3d', 'swinumamba'
 text:
   model_name: 'emilyalsentzer/Bio_ClinicalBERT'
   freeze_layers: 0

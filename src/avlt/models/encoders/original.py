@@ -1,10 +1,17 @@
-
 import torch
 import torch.nn as nn
 import timm
 from transformers import AutoModel, AutoConfig
 
+
 class VisionEncoder(nn.Module):
+    """
+    Original author's implementation (BROKEN).
+    Has MaxPool2d that reduces spatial dimensions to 112x112, 
+    but ViT is created expecting 224x224 input.
+    This will raise: AssertionError: Input height (56) doesn't match model (224).
+    Kept for reference only.
+    """
     def __init__(self, image_size=224, backbone='vit_base_patch16_224', pretrained=True, cnn_stem=True, out_dim=768):
         super().__init__()
         self.cnn_stem = None
@@ -14,11 +21,12 @@ class VisionEncoder(nn.Module):
                 nn.BatchNorm2d(32), nn.ReLU(inplace=True),
                 nn.Conv2d(32, 32, kernel_size=3, padding=1),
                 nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-                nn.MaxPool2d(2)
+                nn.MaxPool2d(2)  # 224 -> 112, but ViT still expects 224!
             )
             in_ch = 32
         else:
             in_ch = 4
+        # BUG: ViT expects 224x224 but CNN stem outputs 112x112
         self.backbone = timm.create_model(backbone, pretrained=pretrained, in_chans=in_ch, num_classes=0)
         self.proj = nn.Linear(self.backbone.num_features, out_dim)
 
@@ -27,22 +35,3 @@ class VisionEncoder(nn.Module):
             x = self.cnn_stem(x)
         feat = self.backbone(x)
         return self.proj(feat)
-
-class TextEncoder(nn.Module):
-    def __init__(self, model_name='emilyalsentzer/Bio_ClinicalBERT', out_dim=768, freeze_layers=0):
-        super().__init__()
-        cfg = AutoConfig.from_pretrained(model_name)
-        self.bert = AutoModel.from_pretrained(model_name, config=cfg)
-        # Optionally freeze some lower layers
-        if freeze_layers > 0:
-            n_freeze = freeze_layers
-            for i, layer in enumerate(self.bert.encoder.layer):
-                if i < n_freeze:
-                    for p in layer.parameters():
-                        p.requires_grad = False
-        self.proj = nn.Linear(self.bert.config.hidden_size, out_dim)
-
-    def forward(self, input_ids, attention_mask):
-        out = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = out.last_hidden_state[:,0]  # CLS
-        return self.proj(pooled)

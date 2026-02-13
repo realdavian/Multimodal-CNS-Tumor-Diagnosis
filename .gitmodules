@@ -1,0 +1,3 @@
+[submodule "src/avlt/models/external/Swin-UMamba"]
+	path = src/avlt/models/external/Swin-UMamba
+	url = https://github.com/JiarunLiu/Swin-UMamba.git
