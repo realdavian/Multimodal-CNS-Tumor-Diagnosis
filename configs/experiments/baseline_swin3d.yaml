@@ -1,0 +1,4 @@
+# Baseline: 3D Swin Transformer (MONAI SwinUNETR encoder)
+vision:
+  variant: swin3d
+batch_size: 2

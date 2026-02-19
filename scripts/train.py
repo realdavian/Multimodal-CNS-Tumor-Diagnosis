@@ -1,30 +1,53 @@
+"""
+Entry point: ``python scripts/train.py``
 
-import argparse, yaml, os
-from avlt.train.engine_vision_only import train_loop as vision_only_train_loop # replaced for vision only training
-from avlt.train.engine import train_loop # original training loop
+Uses Hydra for config management and CLI overrides.
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/base.yaml")
-    parser.add_argument("--train_engine", type=str, default="vision_only",
-                        choices=["vision_only", "original"],
-                        help="Training engine: 'vision_only' or 'original'")
-    parser.add_argument("--synthetic", type=str, default="true")
-    parser.add_argument("--max_steps", type=int, default=50)
-    parser.add_argument("--vision_variant", type=str, default=None,
-                        choices=["fixed", "no_pool", "original", "swin3d"],
-                        help="Override vision encoder variant: 'fixed', 'no_pool', 'original', or 'swin3d'")
-    args = parser.parse_args()
-    cfg = yaml.safe_load(open(args.config))
-    if args.synthetic.lower() in ("true","1","yes"):
-        cfg["dataset"] = "synthetic"
-    if args.vision_variant:
-        cfg["vision"]["variant"] = args.vision_variant
-    os.makedirs(cfg["outputs"], exist_ok=True)
-    if args.train_engine == "vision_only":
-        vision_only_train_loop(cfg, max_steps=args.max_steps)
-    else:
-        train_loop(cfg, max_steps=args.max_steps)
+Usage::
+
+    # Default: vision-only with base config
+    python scripts/train.py
+
+    # Select experiment override
+    python scripts/train.py +experiment=baseline_swin3d
+
+    # Override any config value from CLI
+    python scripts/train.py vision.variant=slice_wise mode=multimodal
+
+    # Enable W&B logging
+    python scripts/train.py wandb.enabled=true
+
+    # Smoke test (5 steps)
+    python scripts/train.py max_steps=5
+
+    # Combine experiment + overrides
+    python scripts/train.py +experiment=baseline_swin3d max_steps=10 wandb.enabled=true
+"""
+
+import os
+
+import hydra
+from omegaconf import DictConfig, OmegaConf
+
+from avlt.train.engine import train_loop
+
+
+@hydra.main(version_base=None, config_path="../configs", config_name="base")
+def main(cfg: DictConfig):
+    # Handle +experiment= by loading the experiment YAML and merging it
+    experiment = cfg.get("experiment")
+    if experiment is not None:
+        exp_path = os.path.join(
+            os.path.dirname(__file__), "..", "configs", "experiments", f"{experiment}.yaml"
+        )
+        exp_cfg = OmegaConf.load(exp_path)
+        # Strip any Hydra comments/directives from loaded config
+        if "_target_" in exp_cfg:
+            del exp_cfg["_target_"]
+        cfg = OmegaConf.merge(cfg, exp_cfg)
+
+    train_loop(cfg)
+
 
 if __name__ == "__main__":
     main()

@@ -215,6 +215,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# External vendored dependencies (submodule refs stay in .gitmodules)
+src/avlt/models/external/
+
 # Others
 paper_parsing
 author-published-paper

@@ -1,0 +1,3 @@
+# Baseline: 2D CNN + ViT (fixed, with MaxPool)
+vision:
+  variant: fixed

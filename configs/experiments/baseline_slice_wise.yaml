@@ -1,0 +1,3 @@
+# Baseline: 2.5D Slice-Wise ViT + Slice Attention
+vision:
+  variant: slice_wise

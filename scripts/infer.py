@@ -1,36 +1,76 @@
+"""
+Entry point: ``python scripts/infer.py``
 
-import argparse, yaml, os, torch, numpy as np
-from transformers import AutoTokenizer
-from avlt.models.avlt import AVLT
+Uses Hydra for config composition.
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/base.yaml")
-    parser.add_argument("--ckpt", type=str, default="outputs/avlt_synthetic.pt")
-    parser.add_argument("--image", type=str, required=False, help="Path to 4-channel numpy .npy (C,H,W)")
-    parser.add_argument("--text", type=str, default="Patient with IDH mutation and MGMT methylation.")
-    args = parser.parse_args()
-    cfg = yaml.safe_load(open(args.config))
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = AVLT(num_classes=cfg["num_classes"], image_size=cfg["image_size"],
-                 backbone=cfg["vision"]["backbone"], text_model=cfg["text"]["model_name"],
-                 dropout=cfg["dropout"]).to(device)
-    model.load_state_dict(torch.load(args.ckpt, map_location=device))
+Usage::
+
+    # Vision-only inference (random image)
+    python scripts/infer.py ckpt=outputs/avlt_vision_only.pt
+
+    # Vision-only with real volume
+    python scripts/infer.py ckpt=outputs/avlt_vision_only.pt image=path/to/volume.npy
+
+    # Multimodal inference
+    python scripts/infer.py ckpt=outputs/avlt_multimodal.pt mode=multimodal \\
+        text="Patient with IDH mutation and MGMT methylation."
+"""
+
+import os
+
+import hydra
+from omegaconf import DictConfig
+import numpy as np
+import torch
+
+from avlt.train.engine import _build_model
+
+
+@hydra.main(version_base=None, config_path="../configs", config_name="base")
+def main(cfg: DictConfig):
+    ckpt_path = cfg.get("ckpt")
+    if not ckpt_path:
+        raise ValueError("Pass ckpt= on the command line, e.g.: python scripts/infer.py ckpt=outputs/avlt_vision_only.pt")
+
+    mode = cfg.get("mode", "vision_only")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = _build_model(cfg, device)
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model.eval()
+
     # Prepare image
-    if args.image and os.path.exists(args.image):
-        arr = np.load(args.image)  # (4,H,W)
+    image_path = cfg.get("image")
+    if image_path and os.path.exists(image_path):
+        arr = np.load(image_path)
     else:
-        arr = np.random.randn(4, cfg["image_size"], cfg["image_size"]).astype(np.float32)
+        num_slices = cfg.get("num_slices", 16)
+        img_size = cfg.image_size
+        arr = np.random.randn(4, num_slices, img_size, img_size).astype(np.float32)
+        print(f"Using random volume: shape {arr.shape}")
+
     img = torch.tensor(arr).unsqueeze(0).to(device)
-    # Prepare text
-    tok = AutoTokenizer.from_pretrained(cfg["text"]["model_name"])
-    enc = tok(args.text, padding='max_length', truncation=True, max_length=cfg["text_maxlen"], return_tensors='pt')
-    ids = enc["input_ids"].to(device); attn = enc["attention_mask"].to(device)
+
     with torch.no_grad():
-        logits, f_v, f_t, f_fused, a, b = model(img, ids, attn)
+        if mode == "multimodal":
+            from transformers import AutoTokenizer
+            text = cfg.get("text", "Patient with IDH mutation and MGMT methylation.")
+            tok = AutoTokenizer.from_pretrained(cfg.text.model_name)
+            enc = tok(
+                text, padding="max_length", truncation=True,
+                max_length=cfg.get("text_maxlen", 128), return_tensors="pt",
+            )
+            ids = enc["input_ids"].to(device)
+            attn = enc["attention_mask"].to(device)
+            logits, *_ = model(img, ids, attn)
+        else:
+            logits, *_ = model(img)
+
         prob = torch.softmax(logits, dim=1).cpu().numpy()[0]
-    print("Probabilities:", prob)
+
+    print(f"Probabilities: {prob}")
+    print(f"Predicted class: {prob.argmax()}")
+
 
 if __name__ == "__main__":
     main()
