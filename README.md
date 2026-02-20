@@ -16,9 +16,28 @@ It includes:
 
 ## Setup
 
+1. **Clone with submodules** (required for `Swin-UMamba` encoder):
 ```bash
+git submodule update --init --recursive
+```
+
+2. **Create and activate environment (using your system's package repo)**:
+```bash
+conda create -n davian-py3110 python=3.11 -y
 conda activate davian-py3110
-uv pip install hydra-core wandb
+```
+
+3. **Install `uv` (if not already installed)**:
+```bash
+pip install uv
+```
+
+4. **Install dependencies**:
+```bash
+# 1. Install Swin-UMamba from git submodule
+uv pip install -e lib/Swin-UMamba/swin_umamba
+# 2. Install local project
+uv pip install -e .
 ```
 
 For W&B tracking, authenticate once:

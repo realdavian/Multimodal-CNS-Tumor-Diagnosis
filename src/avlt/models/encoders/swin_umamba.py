@@ -76,7 +76,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     # Fallback: load directly from cloned source file
     _src = os.path.join(
-        os.path.dirname(__file__), "..", "external",
+        os.path.dirname(__file__), "..", "..", "..", "..", "..", "lib",
         "Swin-UMamba", "swin_umamba", "nnunetv2", "nets", "SwinUMamba.py"
     )
     _src = os.path.abspath(_src)
