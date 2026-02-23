@@ -221,5 +221,6 @@ src/avlt/models/external/
 # Others
 paper_parsing
 author-published-paper
-data
+/data
 outputs/
+wandb/

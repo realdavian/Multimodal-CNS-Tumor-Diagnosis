@@ -1,0 +1,11 @@
+dataset: brats_multitask
+data_root: /mnt/disk1/datasets/BraTS-PEDs/Training
+cohort_csv: data/brats-ped/cohort_with_OS_stratified.csv
+num_classes: 3
+num_seg_classes: 4   # Background(0), Necrotic(1), Edema(2), Enhancing(3)
+mode: multitask
+
+vision:
+  variant: swin3d_multitask
+
+batch_size: 2

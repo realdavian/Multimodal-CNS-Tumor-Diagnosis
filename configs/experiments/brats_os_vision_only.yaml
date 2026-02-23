@@ -1,0 +1,8 @@
+dataset: brats_peds
+data_root: /mnt/disk1/datasets/BraTS-PEDs/Training
+cohort_csv: data/brats-ped/cohort_with_OS_stratified.csv
+num_classes: 3
+
+vision:
+  variant: swin3d
+batch_size: 2

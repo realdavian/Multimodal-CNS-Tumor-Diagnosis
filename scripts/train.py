@@ -20,6 +20,12 @@ Usage::
     # Smoke test (5 steps)
     python scripts/train.py max_steps=5
 
+    # Enable data augmentation
+    python scripts/train.py +experiment=brats_os_multitask augmentation=true
+
+    # Enable cross-validation
+    python scripts/train.py +experiment=brats_os_multitask cv.enabled=true cv.n_folds=5
+
     # Combine experiment + overrides
     python scripts/train.py +experiment=baseline_swin3d max_steps=10 wandb.enabled=true
 """
@@ -46,7 +52,13 @@ def main(cfg: DictConfig):
             del exp_cfg["_target_"]
         cfg = OmegaConf.merge(cfg, exp_cfg)
 
-    train_loop(cfg)
+    # Dispatch to cross-validation or standard training
+    cv_enabled = OmegaConf.select(cfg, "cv.enabled", default=False)
+    if cv_enabled:
+        from avlt.train.cross_validation import run_cross_validation
+        run_cross_validation(cfg)
+    else:
+        train_loop(cfg)
 
 
 if __name__ == "__main__":

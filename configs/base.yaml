@@ -5,19 +5,27 @@ seed: 42
 outputs: outputs
 dataset: synthetic
 data_root: data
+cohort_csv: null
 mode: vision_only       # "vision_only" or "multimodal"
 
 image_size: 224
 num_slices: 128
 num_classes: 2
+num_seg_classes: 4
 text_maxlen: 128
 batch_size: 8
 num_workers: 2
-epochs: 3
-lr: 1e-4
+epochs: 20
+lr: 1e-5
 weight_decay: 1e-4
 warmup_frac: 0.1
 dropout: 0.3
+
+augmentation: false      # toggle data augmentation (flips, rotations, intensity shifts)
+
+cv:
+  enabled: false         # toggle stratified k-fold cross-validation
+  n_folds: 5             # number of CV folds
 
 max_steps: null         # set to int for smoke tests
 

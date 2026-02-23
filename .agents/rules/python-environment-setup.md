@@ -6,54 +6,70 @@ trigger: always_on
 
 ## **Project Architecture**
 
-This project utilizes a **hybrid setup**:
+This project uses a **two-layer isolation pattern**:
 
-* **Environment Isolation:** Managed via `conda`.
-* **Package Management:** Managed exclusively via `uv` (as a high-performance replacement for `pip`).
+* **Python Interpreter:** Provided by the shared `davian-py3110` conda environment.
+* **Project Packages:** Isolated in a `.venv` inside the project root, managed by `uv`.
 
-## **The Golden Rule**
-
-> **Never** execute a Python script or a `uv` command without first ensuring the `davian-py3110` environment is active. `uv` is installed locally within this environment and will fail in the base shell.
+> **Why both?** `davian-py3110` is a shared conda env for all Python 3.11 projects on this machine.
+> The `.venv` holds packages specific to *this* project so they don't pollute other projects.
 
 ---
 
-## 📋 Execution Protocols
+## The Golden Rule
+
+> **Never** run a Python script or `uv` command without activating **both** layers first.
+
+The easiest way to do this is via the project's activation script:
+
+```bash
+source activate.sh
+```
+
+---
+
+## Execution Protocols
 
 ### **1. Activation Requirement**
 
-Before running any terminal command involving Python, `uv`, or project dependencies, you **must** prefix the command with the activation sequence or verify activation.
+Always activate both layers before running any Python or `uv` command.
 
-* **Target Environment:** `davian-py3110`
-* **Preferred Command Pattern:** ```bash
-conda activate davian-py3110 && <your_command_here>
-```
+* **Recommended (uses the project script):**
+  ```bash
+  source activate.sh && <your_command_here>
+  ```
 
-
-```
-
-
+* **Manual equivalent:**
+  ```bash
+  conda activate davian-py3110 && source .venv/bin/activate && <your_command_here>
+  ```
 
 ### **2. Package Operations**
 
-* **Strict Prohibit:** Do not use `pip install`.
-* **Standard Practice:** Use `uv` for all dependency management.
-* **Syncing:** If a `pyproject.toml` or `requirements.txt` is updated, use `uv pip sync` or `uv add` within the activated environment.
+* **Strictly prohibited:** `pip install`
+* **Standard practice:** Use `uv` for all dependency management within the activated environment.
+* **Syncing:** After updating `pyproject.toml` or `requirements.txt`, run:
+  ```bash
+  uv pip sync
+  ```
 
 ### **3. Verification Check**
 
-If you are unsure if the environment is active, run:
+To confirm both layers are active:
 
 ```bash
+# Check conda env (look for * next to davian-py3110)
 conda info --envs
 
+# Check venv (should point to .venv inside the project)
+which python
 ```
-
-Ensure the asterisk `*` is next to `davian-py3110` before proceeding.
 
 ---
 
-## 🚫 Critical Constraints
+## Critical Constraints
 
-* **Do not** attempt to install packages using the system Python.
-* **Do not** create new `venv` folders; we strictly stick to the `davian-py3110` conda environment.
-* **Do not** skip the `conda activate` step even if the terminal appears to be in the correct directory.
+* **Do not** use `pip install`. Use `uv` exclusively.
+* **Do not** create additional venv folders outside the project root.
+* **Do not** skip activation — the `.venv` packages will be missing without it.
+* **Do not** use the system Python.
