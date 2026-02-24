@@ -23,7 +23,7 @@ from ..models.avlt import AVLT
 from ..models.avlt_vision_only import AVLTVisionOnly
 from ..data.dataset import SyntheticDataset
 from ..data.brats import BraTSDataset
-from .losses import Losses
+from .losses import build_loss
 from .distillation import SelfDistillation
 from ..utils.metrics import MetricTracker
 from ..utils.loggers import logger
@@ -66,8 +66,8 @@ def _wandb_init(cfg):
     """Initialize W&B run if enabled.
     
     If a run is already active (e.g. from a W&B sweep agent), reuse it
-    instead of creating a new one. Supports an optional display name via
-    ``wandb.display_name`` config key.
+    and upload the full training config. Supports an optional display name
+    via ``wandb.display_name`` config key.
 
     Returns the run object or None.
     """
@@ -76,15 +76,19 @@ def _wandb_init(cfg):
     try:
         import wandb
 
+        cfg_dict = _cfg_to_dict(cfg)
+
         # If a sweep agent already initialized a run, reuse it
         if wandb.run is not None:
             run = wandb.run
+            # Upload the full training config so params appear in the W&B UI
+            run.config.update(cfg_dict, allow_val_change=True)
             logger.info(f"Reusing existing W&B run: {run.name} ({run.url})")
         else:
             run = wandb.init(
                 project=_cfg_get(cfg, "wandb.project", "avlt"),
                 entity=_cfg_get(cfg, "wandb.entity"),
-                config=_cfg_to_dict(cfg),
+                config=cfg_dict,
                 tags=list(_cfg_get(cfg, "wandb.tags", [])),
                 notes=_cfg_get(cfg, "wandb.notes", ""),
                 reinit=True,
@@ -352,10 +356,7 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
     use_amp = _cfg_get(cfg, "trainer.mixed_precision", True) and str(device).startswith("cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    losses = Losses(
-        w_align=_cfg_get(cfg, "w_align", 0.0),
-        w_sd=_cfg_get(cfg, "w_sd", 0.5),
-    )
+    loss_fn = build_loss(cfg)
 
     log_every = _cfg_get(cfg, "trainer.log_every", 10)
     grad_clip = _cfg_get(cfg, "trainer.grad_clip", 1.0)
@@ -379,7 +380,7 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
                     if use_sd:
                         teacher_out = distiller.forward(imgs, ids, attn)
                         logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = losses.total(logits_s, logits_t, y, f_v, f_t)
+                    loss, parts = loss_fn.total(logits_s, logits_t, y, f_v, f_t)
                 elif mode == "multitask":
                     seg_mask = batch["seg_mask"].to(device)
                     logits_s, seg_logits_s, f_v = model_s(imgs)
@@ -389,13 +390,8 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
                         teacher_out = distiller.forward(imgs)
                         # The multitask model returns (os_logits, seg_logits, f_v)
                         logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = losses.total(
-                        logits_s=logits_s, 
-                        logits_t=logits_t, 
-                        y=y, 
-                        f_v=f_v, 
-                        seg_logits_s=seg_logits_s, 
-                        seg_mask=seg_mask
+                    loss, parts = loss_fn.total(
+                        logits_s, logits_t, y, seg_logits_s, seg_mask
                     )
                 else:
                     logits_s, f_v = model_s(imgs)
@@ -404,7 +400,7 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
                     if use_sd:
                         teacher_out = distiller.forward(imgs)
                         logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = losses.total(logits_s, logits_t, y)
+                    loss, parts = loss_fn.total(logits_s, logits_t, y)
 
             scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model_s.parameters(), grad_clip)

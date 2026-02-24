@@ -29,12 +29,22 @@ cv:
 
 max_steps: null         # set to int for smoke tests
 
+# Loss configuration
+# classification: cross_entropy | weighted_ce
+# segmentation:   dice_ce | dice_focal  (multitask only)
+loss:
+  classification: cross_entropy
+  segmentation: dice_ce
+  w_sd: 0.5               # self-distillation weight
+  w_seg: 1.0              # segmentation weight (multitask only)
+  w_align: 1.0            # alignment weight (multimodal only)
+
 # Self-distillation
 self_distillation: true
 ema_momentum: 0.999
-w_sd: 0.5
 
-# Cross-modal alignment (multimodal only, ignored in vision-only)
+# Legacy keys (kept for backward compat, prefer loss.* above)
+w_sd: 0.5
 w_align: 1.0
 
 vision:
