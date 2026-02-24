@@ -63,20 +63,40 @@ def _cfg_to_dict(cfg):
 # ---------------------------------------------------------------------------
 
 def _wandb_init(cfg):
-    """Initialize W&B run if enabled. Returns the run object or None."""
+    """Initialize W&B run if enabled.
+    
+    If a run is already active (e.g. from a W&B sweep agent), reuse it
+    instead of creating a new one. Supports an optional display name via
+    ``wandb.display_name`` config key.
+
+    Returns the run object or None.
+    """
     if not _cfg_get(cfg, "wandb.enabled", False):
         return None
     try:
         import wandb
-        run = wandb.init(
-            project=_cfg_get(cfg, "wandb.project", "avlt"),
-            entity=_cfg_get(cfg, "wandb.entity"),
-            config=_cfg_to_dict(cfg),
-            tags=list(_cfg_get(cfg, "wandb.tags", [])),
-            notes=_cfg_get(cfg, "wandb.notes", ""),
-            reinit=True,
-        )
-        logger.info(f"W&B run: {run.url}")
+
+        # If a sweep agent already initialized a run, reuse it
+        if wandb.run is not None:
+            run = wandb.run
+            logger.info(f"Reusing existing W&B run: {run.name} ({run.url})")
+        else:
+            run = wandb.init(
+                project=_cfg_get(cfg, "wandb.project", "avlt"),
+                entity=_cfg_get(cfg, "wandb.entity"),
+                config=_cfg_to_dict(cfg),
+                tags=list(_cfg_get(cfg, "wandb.tags", [])),
+                notes=_cfg_get(cfg, "wandb.notes", ""),
+                reinit=True,
+            )
+            logger.info(f"W&B run: {run.url}")
+
+        # Set display name if provided
+        display_name = _cfg_get(cfg, "wandb.display_name")
+        if display_name:
+            run.name = display_name
+            logger.info(f"W&B display name: {display_name}")
+
         return run
     except Exception as e:
         logger.warning(f"W&B init failed ({e}). Continuing without W&B.")

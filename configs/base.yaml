@@ -16,7 +16,7 @@ text_maxlen: 128
 batch_size: 8
 num_workers: 2
 epochs: 20
-lr: 1e-5
+lr: 5e-5
 weight_decay: 1e-4
 warmup_frac: 0.1
 dropout: 0.3

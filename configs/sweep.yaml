@@ -1,0 +1,17 @@
+# W&B Sweep Configuration
+# Usage:
+#   1. Create sweep:  wandb sweep configs/sweep.yaml
+#   2. Run agent:     wandb agent <sweep_id>
+#   OR use the wrapper script: python scripts/run_sweep.py
+
+program: scripts/run_sweep.py
+method: grid               # exhaustive grid search
+project: avlt
+
+parameters:
+  epochs:
+    values: [10, 20, 50]
+  lr:
+    values: [0.00001, 0.00005, 0.0001]
+  augmentation:
+    values: [true, false]
