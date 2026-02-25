@@ -41,9 +41,11 @@ class AVLTVisionMultitask(nn.Module):
             images: (B, C, D, H, W) 3-D volume.
 
         Returns:
-            os_logits:  (B, num_classes) for survival prediction
-            seg_logits: (B, num_seg_classes, D, H, W) for segmentation
-            f_v:        (B, 768) extracted vision features (for self-distillation)
+            dict: {
+                "os_logits":  (B, num_classes)
+                "seg_logits": (B, num_seg_classes, D, H, W)
+                "f_v":        (B, 768)
+            }
         """
         # Multitask Vision Encoder returns extracted feature array + seg mask logits
         f_v, seg_logits = self.vision(images)
@@ -51,4 +53,8 @@ class AVLTVisionMultitask(nn.Module):
         # Pass deep features through classification head for Overall Survival (OS) prediction
         os_logits = self.head(self.dropout(f_v))
         
-        return os_logits, seg_logits, f_v
+        return {
+            "os_logits": os_logits,
+            "seg_logits": seg_logits,
+            "f_v": f_v
+        }

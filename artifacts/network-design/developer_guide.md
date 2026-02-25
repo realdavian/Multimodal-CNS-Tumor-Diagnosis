@@ -82,19 +82,44 @@ loss:
 The overarching `MultitaskLoss`, `VisionOnlyLoss`, etc., will automatically pick it up and wire it into the total loss calculation.
 
 ### C. Adding a New Dataset
-Currently, datasets are explicitly wired in `src/avlt/train/engine.py` inside the `create_dataloaders()` function. 
+Datasets use a factory pattern based in `src/avlt/data/__init__.py`. The engine dynamically creates datasets without needing hardcoded imports.
 
-**Step 1:** Create your PyTorch Dataset in `src/avlt/data/`.
-**Step 2:** Hook it into the engine:
+**Step 1:** Create your PyTorch Dataset in `src/avlt/data/my_new_dataset.py`.
+**Step 2:** Hook it into the registry in `src/avlt/data/__init__.py`:
 ```python
-# In engine.py : create_dataloaders(cfg)
-dataset_name = _cfg_get(cfg, "dataset", "brats_peds")
+from .my_new_dataset import MyNewDataset
 
-if dataset_name == "brats_peds":
-    ds = BraTSDataset(...)
-elif dataset_name == "my_new_data":
-    ds = MyNewDataset(...) # <-- Add your hook here
+def create_dataset(dataset_name: str, **kwargs):
+    registry = {
+        "brats_peds": BraTSDataset,
+        "my_new_data": MyNewDataset, # <-- Add your hook here
+    }
+    return registry[dataset_name](**kwargs)
 ```
+
+**Step 3:** Tell the experiment to use it via config:
+```yaml
+dataset: my_new_data
+```
+
+### D. Adding a New Top-Level Model Wrapper
+Top-level models (`AVLT`, `AVLTVisionMultitask`) compile encoders, fusion blocks, and heads together. They are managed by `src/avlt/models/__init__.py`.
+
+**Crucial Standard - Dictionary Outputs:**
+To prevent messy `if/else` tuple unpacking chains in the training loop, **all top-level models MUST return a standard Python Dictionary**.
+Example dictionary output:
+```python
+return {
+    "os_logits": os_logits,         # (B, num_classes)
+    "seg_logits": seg_logits,       # (B, num_seg_classes, D, H, W)
+    "f_v": f_v,                     # (B, 768)
+    "f_t": f_t                      # (B, 768)
+}
+```
+The loss subclasses (`MultitaskLoss`, etc.) will cleanly pull exactly the keys they need from this dictionary.
+
+**Step 1:** Create your module (e.g., `src/avlt/models/my_new_wrapper.py`)
+**Step 2:** Register it in `src/avlt/models/__init__.py` inside `create_model()`.
 
 ---
 
@@ -157,6 +182,7 @@ Note: Ensure you update `scripts/run_sweep.py` to point to your `my_idea.yaml` e
 ---
 
 ## 4. Coding Golden Rules
-- **No implicit arguments, no None-checking for dispatch:** Look at the loss refactoring as a prime example. Do not write `if f_v is not None:` to decide what loss to apply. Use explicitly named arguments and let Factories return objects with explicit contracts.
+- **No implicit arguments, no tuple unpacking in chains:** The engine and loss refactoring ensures that top-level model outputs are dictionaries (`outputs_s = model(imgs)`). Do not write `if mode == "multitask": logits, seg_logits = model(imgs)`. Let the loss subclasses gracefully extract what they need from the dictionary.
 - **Hydra Configs over Argparse:** Everything that controls model shape, training loop lengths, or tensor shapes belongs in YAML. 
-- **Avoid Model Side-Effects:** Models (`nn.Module`) should only take tensors and return tensors. They should not calculate their own loss, touch the W&B logger, or read directly from Pandas `[csv]`.
+- **Optional Components:** Components like Self-Distillation should gracefully turn off if `self_distillation: false` is in the config, skipping heavy memory allocation.
+- **Avoid Model Side-Effects:** Models (`nn.Module`) should only take tensors and return tensors (or dictionaries of tensors). They should not calculate their own loss, touch the W&B logger, or read directly from Pandas CSVs.

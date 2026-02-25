@@ -27,4 +27,11 @@ class AVLT(nn.Module):
         f_t = self.text(input_ids, attention_mask)
         f_fused, alpha, beta = self.fusion(f_v, f_t)
         logits = self.head(self.dropout(f_fused))
-        return logits, f_v, f_t, f_fused, alpha, beta
+        return {
+            "os_logits": logits,
+            "f_v": f_v,
+            "f_t": f_t,
+            "f_fused": f_fused,
+            "alpha": alpha,
+            "beta": beta
+        }

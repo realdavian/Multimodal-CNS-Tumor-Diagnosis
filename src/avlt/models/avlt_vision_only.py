@@ -39,9 +39,14 @@ class AVLTVisionOnly(nn.Module):
             images: (B, C, D, H, W) 3-D volume or (B, C, H, W) 2-D image.
 
         Returns:
-            logits: (B, num_classes)
-            f_v:    (B, 768)  vision features (used by self-distillation loss)
+            dict: {
+                "os_logits": (B, num_classes)
+                "f_v":       (B, 768) vision features
+            }
         """
         f_v = self.vision(images)
         logits = self.head(self.dropout(f_v))
-        return logits, f_v
+        return {
+            "os_logits": logits,
+            "f_v": f_v
+        }

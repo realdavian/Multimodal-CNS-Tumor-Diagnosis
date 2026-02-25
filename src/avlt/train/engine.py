@@ -14,15 +14,15 @@ W&B logging is enabled when ``cfg.wandb.enabled`` is True.
 import os
 import json
 import time
+import datetime
 
+import wandb
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from omegaconf import OmegaConf, DictConfig
 
-from ..models.avlt import AVLT
-from ..models.avlt_vision_only import AVLTVisionOnly
-from ..data.dataset import SyntheticDataset
-from ..data.brats import BraTSDataset
+from ..models import create_model
+from ..data import create_dataset
 from .losses import build_loss
 from .distillation import SelfDistillation
 from ..utils.metrics import MetricTracker
@@ -74,16 +74,22 @@ def _wandb_init(cfg):
     if not _cfg_get(cfg, "wandb.enabled", False):
         return None
     try:
-        import wandb
-
         cfg_dict = _cfg_to_dict(cfg)
 
+        def code_filter(path: str) -> bool:
+            # Explicitly ignore massive non-project code directories
+            ignores = [".venv", "lib", "outputs", "wandb", ".git", "__pycache__", "paper_parsing", "tests"]
+            if any(part in path.split(os.sep) for part in ignores):
+                return False
+            return path.endswith(".py") or path.endswith(".yaml") or path.endswith(".yml")
+        
         # If a sweep agent already initialized a run, reuse it
         if wandb.run is not None:
             run = wandb.run
             # Upload the full training config so params appear in the W&B UI
             run.config.update(cfg_dict, allow_val_change=True)
             logger.info(f"Reusing existing W&B run: {run.name} ({run.url})")
+            
         else:
             run = wandb.init(
                 project=_cfg_get(cfg, "wandb.project", "avlt"),
@@ -94,6 +100,9 @@ def _wandb_init(cfg):
                 reinit=True,
             )
             logger.info(f"W&B run: {run.url}")
+        
+        # Upload codebase (scripts + yaml configs)
+        run.log_code(".", include_fn=code_filter)
 
         # Set display name if provided
         display_name = _cfg_get(cfg, "wandb.display_name")
@@ -111,7 +120,6 @@ def _wandb_log(run, data: dict, step: int = None):
     """Log to W&B if run is active."""
     if run is None:
         return
-    import wandb
     wandb.log(data, step=step)
 
 
@@ -119,7 +127,6 @@ def _wandb_finish(run):
     """Finish W&B run if active."""
     if run is None:
         return
-    import wandb
     wandb.finish()
 
 
@@ -139,77 +146,46 @@ def create_dataloaders(cfg, fold_train_indices=None, fold_val_indices=None):
     mode = _cfg_get(cfg, "mode", "vision_only")
     augment = _cfg_get(cfg, "augmentation", False)
     
+    logger.debug(f"Creating {dataset_name} dataset (mode={mode})")
+    ds = create_dataset(
+        dataset_name,
+        # pass all possible args, individual datasets **kwargs ignore what they don't need
+        n=256,
+        num_classes=_cfg_get(cfg, "num_classes"),
+        image_size=_cfg_get(cfg, "image_size", 224),
+        num_slices=_cfg_get(cfg, "num_slices", 16 if dataset_name == "synthetic" else 128),
+        split="train",
+        mode=mode,
+        text_model=_cfg_get(cfg, "text.model_name", "emilyalsentzer/Bio_ClinicalBERT"),
+        text_maxlen=_cfg_get(cfg, "text_maxlen", 128),
+        data_root=_cfg_get(cfg, "data_root"),
+        cohort_csv=_cfg_get(cfg, "cohort_csv"),
+        augment=augment,
+    )
+    
+    n_train = int(0.8 * len(ds))
+    # Synthetic has no test set logic currently
     if dataset_name == "synthetic":
-        logger.debug(f"Creating synthetic dataset (mode={mode})")
-
-        ds = SyntheticDataset(
-            n=256,
-            num_classes=_cfg_get(cfg, "num_classes"),
-            image_size=_cfg_get(cfg, "image_size"),
-            num_slices=_cfg_get(cfg, "num_slices", 16),
-            split="train",
-            mode=mode,
-            text_model=_cfg_get(cfg, "text.model_name", "emilyalsentzer/Bio_ClinicalBERT"),
-            text_maxlen=_cfg_get(cfg, "text_maxlen", 128),
-        )
-        n_train = int(0.8 * len(ds))
         n_val = len(ds) - n_train
-        train_ds, val_ds = random_split(ds, [n_train, n_val])
+        n_test = 0
+        train_ds, val_ds = random_split(
+            ds, [n_train, n_val], 
+            generator=torch.Generator().manual_seed(_cfg_get(cfg, "seed", 42))
+        )
         test_ds = None
-
-    elif dataset_name == "brats_peds":
-        logger.debug(f"Creating BraTS-PEDs dataset (mode={mode})")
-        ds = BraTSDataset(
-            data_root=_cfg_get(cfg, "data_root"),
-            cohort_csv=_cfg_get(cfg, "cohort_csv"),
-            split="train",
-            image_size=_cfg_get(cfg, "image_size", 224),
-            num_slices=_cfg_get(cfg, "num_slices", 128),
-            mode=mode,
-            augment=augment,
-        )
-        
-        # 8:1:1 train validation testing split
-        n_train = int(0.8 * len(ds))
-        n_val = int(0.1 * len(ds))
-        n_test = len(ds) - n_train - n_val
-        
-        train_ds, val_ds, test_ds = random_split(
-            ds, 
-            [n_train, n_val, n_test],
-            generator=torch.Generator().manual_seed(_cfg_get(cfg, "seed", 42))
-        )
-        logger.info(f"Split: train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
-    elif dataset_name == "brats_multitask":
-        from ..data.brats_multitask import BraTSMultitaskDataset
-        logger.debug(f"Creating BraTS-PEDs Multitask dataset (mode={mode})")
-        ds = BraTSMultitaskDataset(
-            data_root=_cfg_get(cfg, "data_root"),
-            cohort_csv=_cfg_get(cfg, "cohort_csv"),
-            split="train",
-            image_size=_cfg_get(cfg, "image_size", 224),
-            num_slices=_cfg_get(cfg, "num_slices", 128),
-            mode=mode,
-            augment=augment,
-        )
-        
-        # 8:1:1 train validation testing split
-        n_train = int(0.8 * len(ds))
-        n_val = int(0.1 * len(ds))
-        n_test = len(ds) - n_train - n_val
-        
-        train_ds, val_ds, test_ds = random_split(
-            ds, 
-            [n_train, n_val, n_test],
-            generator=torch.Generator().manual_seed(_cfg_get(cfg, "seed", 42))
-        )
-        logger.info(f"Split: train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
     else:
-        raise NotImplementedError(f"Dataset {dataset_name} not supported.")
+        n_val = int(0.1 * len(ds))
+        n_test = len(ds) - n_train - n_val
+        train_ds, val_ds, test_ds = random_split(
+            ds, 
+            [n_train, n_val, n_test],
+            generator=torch.Generator().manual_seed(_cfg_get(cfg, "seed", 42))
+        )
+        
+    logger.info(f"Split: train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds) if test_ds else 0}")
 
     # If CV fold indices are provided, use them instead of random_split
     if fold_train_indices is not None and fold_val_indices is not None:
-        from torch.utils.data import Subset
         train_ds = Subset(ds, fold_train_indices)
         val_ds = Subset(ds, fold_val_indices)
         test_ds = None
@@ -241,37 +217,6 @@ def create_dataloaders(cfg, fold_train_indices=None, fold_val_indices=None):
 # ---------------------------------------------------------------------------
 # Model helpers
 # ---------------------------------------------------------------------------
-
-def _build_model(cfg, device):
-    """Instantiate the correct AVLT variant based on mode."""
-    mode = _cfg_get(cfg, "mode", "vision_only")
-    if mode == "multimodal":
-        return AVLT(
-            num_classes=_cfg_get(cfg, "num_classes"),
-            image_size=_cfg_get(cfg, "image_size"),
-            backbone=_cfg_get(cfg, "vision.backbone"),
-            text_model=_cfg_get(cfg, "text.model_name"),
-            dropout=_cfg_get(cfg, "dropout"),
-            vision_variant=_cfg_get(cfg, "vision.variant", "fixed"),
-        ).to(device)
-    elif mode == "multitask":
-        from ..models.avlt_multitask import AVLTVisionMultitask
-        return AVLTVisionMultitask(
-            num_classes=_cfg_get(cfg, "num_classes"),
-            num_seg_classes=_cfg_get(cfg, "num_seg_classes", 4),
-            image_size=_cfg_get(cfg, "image_size"),
-            backbone=_cfg_get(cfg, "vision.backbone"),
-            dropout=_cfg_get(cfg, "dropout"),
-            vision_variant=_cfg_get(cfg, "vision.variant", "swin3d_multitask"),
-        ).to(device)
-    else:
-        return AVLTVisionOnly(
-            num_classes=_cfg_get(cfg, "num_classes"),
-            image_size=_cfg_get(cfg, "image_size"),
-            backbone=_cfg_get(cfg, "vision.backbone"),
-            dropout=_cfg_get(cfg, "dropout"),
-            vision_variant=_cfg_get(cfg, "vision.variant", "fixed"),
-        ).to(device)
 
 
 def _unwrap(model):
@@ -307,7 +252,6 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
     run = _wandb_init(cfg)
     
     # Generate unique run ID
-    import datetime
     if run is not None:
         run_id = run.id
     else:
@@ -329,7 +273,7 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
     logger.info(f"Train: {len(train_dl.dataset)} | Val: {len(val_dl.dataset)} | Test: {test_size}")
 
     # ---- student model ----
-    model_s = _build_model(cfg, device)
+    model_s = create_model(cfg, device)
 
     # ---- self-distillation (EMA teacher) ----
     use_sd = _cfg_get(cfg, "self_distillation", True)
@@ -372,35 +316,21 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
 
             with torch.amp.autocast("cuda", enabled=use_amp):
                 if mode == "multimodal":
-                    ids = batch["input_ids"].to(device)
-                    attn = batch["attention_mask"].to(device)
-                    logits_s, f_v, f_t, f_fused, alpha, beta = model_s(imgs, ids, attn)
-                    # Teacher forward
-                    logits_t = None
-                    if use_sd:
-                        teacher_out = distiller.forward(imgs, ids, attn)
-                        logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = loss_fn.total(logits_s, logits_t, y, f_v, f_t)
-                elif mode == "multitask":
-                    seg_mask = batch["seg_mask"].to(device)
-                    logits_s, seg_logits_s, f_v = model_s(imgs)
-                    # Teacher forward
-                    logits_t = None
-                    if use_sd:
-                        teacher_out = distiller.forward(imgs)
-                        # The multitask model returns (os_logits, seg_logits, f_v)
-                        logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = loss_fn.total(
-                        logits_s, logits_t, y, seg_logits_s, seg_mask
-                    )
+                    batch["input_ids"] = batch["input_ids"].to(device)
+                    batch["attention_mask"] = batch["attention_mask"].to(device)
+                    outputs_s = model_s(imgs, batch["input_ids"], batch["attention_mask"])
                 else:
-                    logits_s, f_v = model_s(imgs)
-                    # Teacher forward
-                    logits_t = None
-                    if use_sd:
-                        teacher_out = distiller.forward(imgs)
-                        logits_t = teacher_out[0] if teacher_out is not None else None
-                    loss, parts = loss_fn.total(logits_s, logits_t, y)
+                    outputs_s = model_s(imgs)
+
+                outputs_t = None
+                if use_sd:
+                    if mode == "multimodal":
+                        outputs_t = distiller.forward(imgs, batch["input_ids"], batch["attention_mask"])
+                    else:
+                        outputs_t = distiller.forward(imgs)
+
+                # Loss function blindly extracts what it needs
+                loss, parts = loss_fn.total(batch, outputs_s, outputs_t)
 
             scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model_s.parameters(), grad_clip)
@@ -409,7 +339,8 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
             opt.zero_grad()
 
             # EMA update
-            distiller.update(model_s)
+            if use_sd:
+                distiller.update(model_s)
 
             if step % log_every == 0:
                 parts_str = "  ".join(f"{k} {v:.3f}" for k, v in parts.items())
@@ -420,10 +351,27 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
 
             if max_steps and step >= max_steps:
                 break
+                
+            # Periodic evaluation
+            val_every_steps = _cfg_get(cfg, "trainer.val_every", 1000)
+            if step % val_every_steps == 0:
+                logger.info(f"--- Step {step} Validation ---")
+                val_report = _evaluate(model_s, val_dl, cfg, device, mode, out_dir, prefix="val")
+                metrics_tracker_log = {f"val/{k}": v for k, v in val_report.items() if isinstance(v, (int, float))}
+                _wandb_log(run, metrics_tracker_log, step=step)
+                
+                # Evaluation sets the model to eval(), we must set it back to train
+                model_s.train()
+                
+                # Save periodic checkpoint
+                step_ckpt_name = f"avlt_{mode}_step{step}.pt"
+                step_ckpt_path = os.path.join(out_dir, step_ckpt_name)
+                torch.save(_unwrap(model_s).state_dict(), step_ckpt_path)
+
         if max_steps and step >= max_steps:
             break
 
-    # ---- save checkpoint ----
+    # ---- save final checkpoint ----
     ckpt_name = "avlt_multimodal.pt" if mode == "multimodal" else "avlt_vision_only.pt"
     ckpt_path = os.path.join(out_dir, ckpt_name)
     torch.save(_unwrap(model_s).state_dict(), ckpt_path)
@@ -457,7 +405,6 @@ def train_loop(cfg, device=None, fold_train_indices=None, fold_val_indices=None,
 
 def _evaluate(model, dl, cfg, device, mode, out_dir, prefix="val"):
     """Run evaluation and save metrics + plots. Returns the metrics dict."""
-    from ..utils.metrics import MetricTracker
     metrics_tracker = MetricTracker(_cfg_get(cfg, "num_classes"))
     model.eval()
     y_true, y_prob = [], []
@@ -480,13 +427,17 @@ def _evaluate(model, dl, cfg, device, mode, out_dir, prefix="val"):
             y = batch["label"].to(device)
 
             if mode == "multimodal":
-                ids = batch["input_ids"].to(device)
-                attn = batch["attention_mask"].to(device)
-                logits, *_ = model(imgs, ids, attn)
-            elif mode == "multitask":
-                # AVLTVisionMultitask returns os_logits, seg_logits, f_v
+                batch["input_ids"] = batch["input_ids"].to(device)
+                batch["attention_mask"] = batch["attention_mask"].to(device)
+                outputs = model(imgs, batch["input_ids"], batch["attention_mask"])
+            else:
+                outputs = model(imgs)
+
+            logits = outputs["os_logits"]
+
+            if mode == "multitask":
                 seg_mask = batch["seg_mask"].to(device)
-                logits, seg_logits, f_v = model(imgs)
+                seg_logits = outputs["seg_logits"]
                 
                 # Compute Dice
                 import monai.transforms as mt
@@ -501,8 +452,6 @@ def _evaluate(model, dl, cfg, device, mode, out_dir, prefix="val"):
                 hd95_metric(y_pred=val_outputs_discrete, y=val_labels_discrete)
                 sd_metric(y_pred=val_outputs_discrete, y=val_labels_discrete)
                 iou_metric(y_pred=val_outputs_discrete, y=val_labels_discrete)
-            else:
-                logits, *_ = model(imgs)
 
             metrics_tracker.update(logits, y)
             y_true.append(y.cpu())

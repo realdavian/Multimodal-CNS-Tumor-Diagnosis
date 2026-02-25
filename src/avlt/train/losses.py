@@ -111,16 +111,19 @@ class BaseLoss(ABC):
 class VisionOnlyLoss(BaseLoss):
     """L = L_cls [+ w_sd * L_sd]"""
 
-    def total(self, logits_s, logits_t, y):
+    def total(self, batch, outputs_s, outputs_t=None):
         """
         Args:
-            logits_s: Student classification logits  [B, C].
-            logits_t: Teacher classification logits  [B, C] or None.
-            y:        Ground-truth class labels      [B].
+            batch:      Standard data batch from DataLoader.
+            outputs_s:  Student model output dict.
+            outputs_t:  Teacher model output dict or None.
 
         Returns:
             (loss, parts_dict)
         """
+        logits_s = outputs_s["os_logits"]
+        logits_t = outputs_t["os_logits"] if outputs_t else None
+        y = batch["label"].to(logits_s.device)
         l_cls = self.classification(logits_s, y)
         parts = {"cls": l_cls.item()}
         total = l_cls
@@ -150,18 +153,21 @@ class MultimodalLoss(BaseLoss):
         f_tn = F.normalize(f_t, dim=1)
         return 1.0 - (f_vn * f_tn).sum(dim=1).mean()
 
-    def total(self, logits_s, logits_t, y, f_v, f_t):
+    def total(self, batch, outputs_s, outputs_t=None):
         """
         Args:
-            logits_s: Student classification logits  [B, C].
-            logits_t: Teacher classification logits  [B, C] or None.
-            y:        Ground-truth class labels      [B].
-            f_v:      Vision feature embeddings      [B, D].
-            f_t:      Text feature embeddings         [B, D].
+            batch:      Standard data batch from DataLoader.
+            outputs_s:  Student model output dict.
+            outputs_t:  Teacher model output dict or None.
 
         Returns:
             (loss, parts_dict)
         """
+        logits_s = outputs_s["os_logits"]
+        logits_t = outputs_t["os_logits"] if outputs_t else None
+        y = batch["label"].to(logits_s.device)
+        f_v = outputs_s["f_v"]
+        f_t = outputs_s["f_t"]
         l_cls = self.classification(logits_s, y)
         parts = {"cls": l_cls.item()}
         total = l_cls
@@ -202,18 +208,21 @@ class MultitaskLoss(BaseLoss):
         seg_mask = seg_mask.unsqueeze(1)
         return self.seg_loss(seg_logits, seg_mask)
 
-    def total(self, logits_s, logits_t, y, seg_logits, seg_mask):
+    def total(self, batch, outputs_s, outputs_t=None):
         """
         Args:
-            logits_s:   Student classification logits  [B, C].
-            logits_t:   Teacher classification logits  [B, C] or None.
-            y:          Ground-truth class labels      [B].
-            seg_logits: Segmentation predictions       [B, C, D, H, W].
-            seg_mask:   Ground-truth seg masks         [B, D, H, W].
+            batch:      Standard data batch from DataLoader.
+            outputs_s:  Student model output dict.
+            outputs_t:  Teacher model output dict or None.
 
         Returns:
             (loss, parts_dict)
         """
+        logits_s = outputs_s["os_logits"]
+        logits_t = outputs_t["os_logits"] if outputs_t else None
+        y = batch["label"].to(logits_s.device)
+        seg_logits = outputs_s["seg_logits"]
+        seg_mask = batch["seg_mask"].to(logits_s.device)
         l_cls = self.classification(logits_s, y)
         parts = {"cls": l_cls.item()}
         total = l_cls
